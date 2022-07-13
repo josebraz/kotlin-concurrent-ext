@@ -141,16 +141,22 @@ private open class DebouncerImpl<T>(
 ): Debouncer<T> {
     protected val mutex = Mutex()
     protected var scheduleJob: Job? = null
-    protected var lastRan: Long = -period
+    protected var lastRan: Long = -Long.MAX_VALUE
 
     override fun debounce(
         arg: T,
+        block: suspend CoroutineScope.(T) -> Unit
+    ): Boolean = debounce(arg, period, block)
+
+    protected fun debounce(
+        arg: T,
+        delay: Long,
         block: suspend CoroutineScope.(T) -> Unit
     ): Boolean {
         mutex.withLockBlocking {
             scheduleJob?.cancel()
             scheduleJob = scope.launch {
-                delay(period)
+                delay(delay)
                 mutex.withLockBlocking {
                     scheduleJob = null
                     lastRan = currentTime()
@@ -188,7 +194,8 @@ private open class ThrottlerImpl<T>(
                 return true
             }
         }
-        debounce(arg, block)
+        val delay = period - (lastRan % period)
+        debounce(arg, delay, block)
         return false
     }
 }
