@@ -1,10 +1,12 @@
 package com.josebraz.concurrent_ext.resource
 
-class ConcurrentList<T>(
-    initialList: MutableList<T>? = null
-): ManyReadersOneWriter<MutableList<T>, List<T>>(
-    initialList?.toMutableList() ?: mutableListOf()
-), MutableList<T> {
+class ConcurrentList<T> : ManyReadersOneWriter<MutableList<T>, List<T>>,
+    MutableList<T> {
+
+    constructor(vararg element: T) : super(mutableListOf(*element))
+
+    constructor(initialList: MutableList<T> = mutableListOf()) : super(initialList)
+
     override val size: Int
         get() = reader { it.size }
 
