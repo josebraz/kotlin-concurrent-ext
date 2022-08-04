@@ -35,3 +35,12 @@ suspend inline fun <T> suspendCoroutineWithTimeout(
 } else {
     suspendCancellableCoroutine(block = block)
 }
+
+public inline fun <T> MutableList<T>.removeFirstOrNull(predicate: (T) -> Boolean): T? {
+    this.forEachIndexed { index, element ->
+        if (predicate(element)) {
+            return this.removeAt(index)
+        }
+    }
+    return null
+}

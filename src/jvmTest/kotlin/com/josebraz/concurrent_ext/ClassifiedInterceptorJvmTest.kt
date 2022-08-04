@@ -11,10 +11,10 @@ class ClassifiedInterceptorJvmTest {
     @Test
     fun assertTimeoutOnTwoEmits(): Unit = runBlocking {
         val interceptor = ClassifiedInterceptor<Long, Int>(-1, 100)
-        async { interceptor.request(1L) }
+        async { interceptor.sendRequest(1L) }
 
         val result2 = async {
-            interceptor.request(1L)
+            interceptor.sendRequest(1L)
         }.await()
 
         System.currentTimeMillis()
