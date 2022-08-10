@@ -10,23 +10,23 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 @ExperimentalCoroutinesApi
-class ClassifiedInterceptorTest {
+class SuspendMediatorTest {
 
     @Test
     fun simpleEmitAndNotifyTest() = runTest {
-        val interceptor = ClassifiedInterceptor<Long, Int>()
+        val interceptor = SuspendMediator<Long, Int>()
 
         var counter = 0
         val list = List(100) { id ->
             async(UnconfinedTestDispatcher()) {
-                val result = interceptor.sendRequest(id.toLong())
+                val result = interceptor.suspend(id.toLong())
                 assertEquals(id, result.getOrThrow())
                 counter++
             }
         }
 
         repeat(100) { id ->
-            interceptor.notifyResponse(id.toLong(), Result.success(id))
+            interceptor.resume(id.toLong(), Result.success(id))
         }
 
         list.awaitAll()
@@ -35,17 +35,17 @@ class ClassifiedInterceptorTest {
 
     @Test
     fun multipleEmitWithTheSameIdTest() = runTest {
-        val interceptor = ClassifiedInterceptor<Long, Int>()
+        val interceptor = SuspendMediator<Long, Int>()
 
         var counter = 0
         val list = List(100) { id ->
             async(UnconfinedTestDispatcher()) {
-                val result = interceptor.sendRequest(1L)
+                val result = interceptor.suspend(1L)
                 assertEquals(id, result.getOrThrow())
                 counter++
             }.also {
                 launch {
-                    interceptor.notifyResponse(1L, Result.success(id))
+                    interceptor.resume(1L, Result.success(id))
                 }
             }
         }
@@ -56,29 +56,29 @@ class ClassifiedInterceptorTest {
 
     @Test
     fun orderedQueueAwaitForAllOlderRequestTest() = runTest {
-        val interceptor = ClassifiedInterceptor<Long, Int>(queueMode = QueueMode.ENSURE_ORDER)
+        val interceptor = SuspendMediator<Long, Int>(queueMode = QueueMode.ENSURE_ORDER)
 
         var counter = 0
         launch(UnconfinedTestDispatcher()) {
             launch {
-                interceptor.sendRequest(1L)
+                interceptor.suspend(1L)
                 counter++
             }
             launch {
-                interceptor.sendRequest(1L) // need await in queue
+                interceptor.suspend(1L) // need await in queue
                 counter++
             }
             launch {
-                interceptor.sendRequest(2L) // need await second complete
+                interceptor.suspend(2L) // need await second complete
                 counter++
             }
         }
 
-        val twoAwaiting1 = interceptor.notifyResponse(2L, Result.success(-1))
-        interceptor.notifyResponse(1L, Result.success(-1))
-        val twoAwaiting2 = interceptor.notifyResponse(2L, Result.success(-1))
-        interceptor.notifyResponse(1L, Result.success(-1))
-        val twoAwaiting3 = interceptor.notifyResponse(2L, Result.success(-1))
+        val twoAwaiting1 = interceptor.resume(2L, Result.success(-1))
+        interceptor.resume(1L, Result.success(-1))
+        val twoAwaiting2 = interceptor.resume(2L, Result.success(-1))
+        interceptor.resume(1L, Result.success(-1))
+        val twoAwaiting3 = interceptor.resume(2L, Result.success(-1))
 
         advanceUntilIdle()
         assertFalse(twoAwaiting1)
@@ -89,27 +89,27 @@ class ClassifiedInterceptorTest {
 
     @Test
     fun awaitSameKeyQueueTest() = runTest {
-        val interceptor = ClassifiedInterceptor<Long, Int>(queueMode = QueueMode.AWAIT_SAME_KEY)
+        val interceptor = SuspendMediator<Long, Int>(queueMode = QueueMode.AWAIT_SAME_KEY)
 
         var counter = 0
         launch(UnconfinedTestDispatcher()) {
             launch {
-                interceptor.sendRequest(1L)
+                interceptor.suspend(1L)
                 counter++
             }
             launch {
-                interceptor.sendRequest(1L) // need await in queue
+                interceptor.suspend(1L) // need await in queue
                 counter++
             }
             launch {
-                interceptor.sendRequest(2L) // no await second complete
+                interceptor.suspend(2L) // no await second complete
                 counter++
             }
         }
 
-        val twoAwaiting1 = interceptor.notifyResponse(2L, Result.success(-1))
-        interceptor.notifyResponse(1L, Result.success(-1))
-        interceptor.notifyResponse(1L, Result.success(-1))
+        val twoAwaiting1 = interceptor.resume(2L, Result.success(-1))
+        interceptor.resume(1L, Result.success(-1))
+        interceptor.resume(1L, Result.success(-1))
 
         advanceUntilIdle()
         assertTrue(twoAwaiting1)
@@ -130,17 +130,17 @@ class ClassifiedInterceptorTest {
             }
         }
 
-        val interceptor = ClassifiedInterceptor<Long, String>()
+        val interceptor = SuspendMediator<Long, String>()
 
         mockServer.onMessage = { result: String ->
             // simulate local process
             val messageId = result.takeWhile { it != '|' }.toLong()
-            interceptor.notifyResponse(messageId, Result.success(result))
+            interceptor.resume(messageId, Result.success(result))
         }
 
         val result = async(UnconfinedTestDispatcher()) {
             val messageId = 1L
-            val result = interceptor.sendRequest(messageId) {
+            val result = interceptor.suspend(messageId) {
                 mockServer.send("$messageId|LALALA")
             }
             result.getOrNull()

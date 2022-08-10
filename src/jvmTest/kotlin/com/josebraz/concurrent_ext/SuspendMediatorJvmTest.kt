@@ -6,15 +6,15 @@ import org.junit.jupiter.api.assertThrows
 import kotlin.test.Test
 
 @ExperimentalCoroutinesApi
-class ClassifiedInterceptorJvmTest {
+class SuspendMediatorJvmTest {
 
     @Test
     fun assertTimeoutOnTwoEmits(): Unit = runBlocking {
-        val interceptor = ClassifiedInterceptor<Long, Int>(-1, 100)
-        async { interceptor.sendRequest(1L) }
+        val interceptor = SuspendMediator<Long, Int>(-1, 100)
+        async { interceptor.suspend(1L) }
 
         val result2 = async {
-            interceptor.sendRequest(1L)
+            interceptor.suspend(1L)
         }.await()
 
         System.currentTimeMillis()
