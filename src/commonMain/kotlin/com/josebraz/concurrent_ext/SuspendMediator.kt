@@ -2,53 +2,65 @@ package com.josebraz.concurrent_ext
 
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.resume
 
 interface SuspendMediator<K, V> {
 
+    /**
+     * Allocate key on queue (if have) and when success calls this action callback.
+     * The action is frequently a socket send call or something like that.
+     *
+     * This method suspends until the resume method with the same key is called or on timeout
+     */
     suspend fun suspend(key: K, action: () -> Unit = {}): Result<V>
 
-    fun resume(key: K, output: Result<V>): Boolean
+    /**
+     * Resume the suspend execution with result.
+     * Returns true if any execution is awaiting for this key or false otherwise.
+     */
+    fun resume(key: K, result: Result<V>): Boolean
 }
 
 enum class QueueMode {
-    NO_AWAIT,
+    NO_QUEUE,
     AWAIT_SAME_KEY,
     ENSURE_ORDER
 }
 
 const val NoTimeout: Long = -1L
 fun <K, V> SuspendMediator(
-    timeoutMillis: Long = NoTimeout,
+    resultTimeoutMillis: Long = NoTimeout,
     queueTimeoutMillis: Long = NoTimeout,
     queueMode: QueueMode = QueueMode.ENSURE_ORDER
 ): SuspendMediator<K, V> {
     return when (queueMode) {
         QueueMode.ENSURE_ORDER -> {
-            OrderedSuspendMediator(timeoutMillis, queueTimeoutMillis)
+            OrderedSuspendMediator(resultTimeoutMillis, queueTimeoutMillis)
         }
         QueueMode.AWAIT_SAME_KEY -> {
-            AwaitSameKeySuspendMediator(timeoutMillis, queueTimeoutMillis)
+            AwaitSameKeySuspendMediator(resultTimeoutMillis, queueTimeoutMillis)
         }
-        QueueMode.NO_AWAIT -> {
-            NoAwaitSuspendMediator(timeoutMillis)
+        QueueMode.NO_QUEUE -> {
+            NoQueueSuspendMediator(resultTimeoutMillis)
         }
     }
 }
 
-private open class NoAwaitSuspendMediator<K, V>(
+internal open class NoQueueSuspendMediator<K, V>(
     private val timeoutMillis: Long
 ): SuspendMediator<K, V> {
-    protected val messages = LinkedHashMap<K, CancellableContinuation<Result<V>>?>()
-    protected val messagesMutex: Mutex = Mutex()
+    // all requests awaiting response
+    val messages = LinkedHashMap<K, CancellableContinuation<Result<V>>?>()
+    val messagesMutex: Mutex = Mutex()
 
     protected open suspend fun awaitAndAllocateKey(key: K) {
-        val allocated = messagesMutex.withLockBlocking {
+        val allocated = messagesMutex.withLock {
             val canAllocateSpace = key !in messages
             if (key !in messages) { // allocate key in map to start request immediately
                 messages[key] = null
             }
-            return@withLockBlocking canAllocateSpace
+            return@withLock canAllocateSpace
         }
         if (!allocated) {
             throw Exception("Key $key already is waiting")
@@ -71,11 +83,11 @@ private open class NoAwaitSuspendMediator<K, V>(
         }
     }
 
-    override fun resume(key: K, output: Result<V>): Boolean {
+    override fun resume(key: K, result: Result<V>): Boolean {
         val entry = messagesMutex.withLockBlocking {
             messages.remove(key)
         } ?: return false
-        entry.resume(output)
+        entry.resume(result)
         return true
     }
 }
@@ -85,30 +97,38 @@ internal data class AwaitRequestEntry<K>(
     val continuation: CancellableContinuation<Unit>
 )
 
-private abstract class AwaitSuspendMediator<K, V>(
+internal abstract class QueueSuspendMediator<K, V>(
     timeoutMillis: Long,
     private val queueTimeoutMillis: Long
-): NoAwaitSuspendMediator<K, V>(timeoutMillis) {
+): NoQueueSuspendMediator<K, V>(timeoutMillis) {
 
     val awaitQueue = mutableListOf<AwaitRequestEntry<K>>()
     val awaitQueueMutex: Mutex = Mutex()
 
     override suspend fun awaitAndAllocateKey(key: K) {
-        return suspendCoroutineWithTimeout(queueTimeoutMillis) { continuation ->
-            val allocated = messagesMutex.withLockBlocking {
-                val needAwait = needAwait(key, messages.keys)
-                val canAllocateSpace = !needAwait
-                if (canAllocateSpace) { // allocate key in map to start request immediately
-                    messages[key] = null
-                }
-                return@withLockBlocking canAllocateSpace
+        val allocated = messagesMutex.withLock {
+            val needAwait = needAwait(key, messages.keys)
+            val canAllocateSpace = !needAwait
+            if (canAllocateSpace) { // allocate key in map to start request immediately
+                messages[key] = null
             }
-            if (allocated) {
-                continuation.resume(Unit)
-            } else {
-                awaitQueueMutex.withLockBlocking {
-                    awaitQueue.add(AwaitRequestEntry(key, continuation))
+            return@withLock canAllocateSpace
+        }
+        if (!allocated) {
+            var entry: AwaitRequestEntry<K>? = null
+            try {
+                suspendCoroutineWithTimeout<Unit>(queueTimeoutMillis) { continuation ->
+                    awaitQueueMutex.withLockBlocking {
+                        awaitQueue.add(AwaitRequestEntry(key, continuation).also { entry = it })
+                    }
                 }
+            } catch (e: Exception) {
+                entry?.let {
+                    awaitQueueMutex.withLock {
+                        awaitQueue.remove(it)
+                    }
+                }
+                throw e
             }
         }
     }
@@ -117,13 +137,13 @@ private abstract class AwaitSuspendMediator<K, V>(
 
     abstract fun resumeWaiting(key: K)
 
-    override fun resume(key: K, output: Result<V>): Boolean {
+    override fun resume(key: K, result: Result<V>): Boolean {
         val entry = messagesMutex.withLockBlocking {
             messages.remove(key)?.also {
                 resumeWaiting(key)
             }
         } ?: return false
-        entry.resume(output)
+        entry.resume(result)
         return true
     }
 }
@@ -131,7 +151,7 @@ private abstract class AwaitSuspendMediator<K, V>(
 private class OrderedSuspendMediator<K, V>(
     timeoutMillis: Long,
     queueTimeoutMillis: Long
-): AwaitSuspendMediator<K, V>(timeoutMillis, queueTimeoutMillis) {
+): QueueSuspendMediator<K, V>(timeoutMillis, queueTimeoutMillis) {
 
     override fun needAwait(key: K, messages: Set<K>): Boolean {
         // To ensure order all older requests must be sent
@@ -149,7 +169,7 @@ private class OrderedSuspendMediator<K, V>(
 private class AwaitSameKeySuspendMediator<K, V>(
     timeoutMillis: Long,
     queueTimeoutMillis: Long
-): AwaitSuspendMediator<K, V>(timeoutMillis, queueTimeoutMillis) {
+): QueueSuspendMediator<K, V>(timeoutMillis, queueTimeoutMillis) {
 
     override fun needAwait(key: K, messages: Set<K>): Boolean {
         return key in messages

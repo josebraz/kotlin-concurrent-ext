@@ -118,24 +118,21 @@ class SuspendMediatorTest {
 
     @Test
     fun simulateServerCommunicationTest() = runTest {
+        val interceptor = SuspendMediator<Long, String>()
         val mockServer = object {
-            var onMessage: ((result: String) -> Unit)? = null
+            fun onMessage(result: String) {
+                // simulate local process
+                val messageId = result.takeWhile { it != '|' }.toLong()
+                interceptor.resume(messageId, Result.success(result))
+            }
             fun send(request: String) {
                 launch {
                     // simulate server process
                     delay(100)
                     val (messageId, message) = request.split("|")
-                    onMessage?.invoke("$messageId|AAAAA")
+                    onMessage("$messageId|AAAAA")
                 }
             }
-        }
-
-        val interceptor = SuspendMediator<Long, String>()
-
-        mockServer.onMessage = { result: String ->
-            // simulate local process
-            val messageId = result.takeWhile { it != '|' }.toLong()
-            interceptor.resume(messageId, Result.success(result))
         }
 
         val result = async(UnconfinedTestDispatcher()) {
